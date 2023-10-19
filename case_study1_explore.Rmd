@@ -1,0 +1,253 @@
+---
+title: "Case Study 1 - Explore"
+author: "Weiting Miao"
+date: "2023-10-16"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.align = 'center')
+```
+
+
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(car)
+library(lme4)
+library(lmerTest)
+library(lattice)
+library(merTools)
+library(gridExtra)
+```
+
+```{r}
+#load data
+load("streetrx.RData")
+df <- streetrx %>%
+  filter(api_temp == "morphine", !is.na(ppm))
+```
+
+Data Cleaning
+(1). Drop observations if the outcome variable is missing
+(2). Source - factor: Heard it, Personal, Internet, Unknown
+(3). Dosage strength - group them or not?
+
+### Questions of Interest
+To investigate factors related to the price per mg of your drug, accounting for potential clustering by location and exploring heterogeneity in pricing by location.
+
+Variables:
+
+- Outcome variable: ppm
+- Purchasing time: year, month, day, quarter
+- Location: country, state, city
+- Source: source of information               - Unknown
+- Formulation of the drug: factor             - no variation
+- Dosage strength                             - whether treat it as factor or numeric variable, or group them
+- Bulk Purchase: dummy
+- Primary reason: factor                      - many missing values
+
+```{r}
+df$source <- as.character(df$source)
+df$source <- ifelse(grepl("^http", df$source), "Internet", df$source)
+
+freq_df_source <- as.data.frame(table(df$source))
+colnames(freq_df_source) <- c("Value", "Frequency")
+freq_df_source[freq_df_source$Frequency > 50, ]
+
+df <- df %>%
+  mutate(source = case_when(
+    is.null(source)  ~ "Unknown", ## doesn't work
+    is.na(source)  ~ "Unknown",
+    source == "" ~ "Unknown",
+    source == "Heard it" ~ "Heard it",
+    source == "Personal" ~ "Personal",
+    source == "L" ~ "Unknown",
+    TRUE ~ "Internet"
+  ))
+
+
+table(df$form_temp) ## almost all are pill/tablet -> not include it in the model
+table(df$mgstr) ## whether treat it as factor or numeric variable, or group them
+table(df$bulk_purchase)
+table(df$Primary_Reason) ## many missing values -> not include it in the model
+
+# remove states with 1 observation
+df <- df %>%
+  group_by(state) %>%
+  mutate(count = n()) %>%
+  filter(count > 1) 
+table(df$state)
+
+
+# code factors and numeric variables 
+df <- df %>%
+  mutate(ppm = as.numeric(ppm), 
+         price_date = mdy(price_date),
+         year = year(price_date),
+         city = as.factor(city), 
+         state = as.factor(state),
+         country = as.factor(country),
+         USA_region = as.factor(USA_region),
+         source = as.factor(source),
+         mgstr = as.numeric(mgstr),
+         bulk_purchase = as.factor(bulk_purchase)
+         )
+
+df$quarter = as.numeric(substr(df$yq_pdate, nchar(df$yq_pdate), nchar(df$yq_pdate)))
+
+df <- df %>% filter(year>=2010)
+```
+
+
+
+```{r}
+# log ppm
+df$log_ppm <- log(df$ppm)
+
+hist_ppm <- ggplot(df, aes(x=ppm)) + 
+ geom_histogram(aes(y=..density..), colour="black", fill="white", bins = 50)
+
+hist_log_ppm <- ggplot(df, aes(x=log_ppm)) + 
+ geom_histogram(aes(y=..density..), colour="black", fill="white", bins = 50)
+grid.arrange(hist_ppm, hist_log_ppm, ncol=2)
+
+df <- df %>% filter(ppm > 0)
+```
+```{r}
+### random intercept
+
+ggplot(df, aes(x=log_ppm, y=reorder(state, state, length))) +
+  geom_boxplot(outlier.size = 0.1) +
+  labs(title="Log(ppm) by State", x = "Log(ppm)", y = "State")
+
+```
+
+```{r}
+eda_year = ggplot(data = df %>% filter(year>2009), aes(x = year, y = log_ppm)) +
+  geom_point(size = 0.5, alpha = 0.5) +   
+  geom_line(size = 0.5, alpha = 0.2) +
+  geom_smooth( method = "loess", se = FALSE, size = 1.5) + 
+  labs(x = "Year",
+       y = "Log(ppm)")
+
+eda_quarter = ggplot(data = df %>% filter(year>2009), aes(x = quarter, y = log_ppm)) +
+  geom_point(size = 0.5, alpha = 0.5) +   
+  geom_line(size = 0.5, alpha = 0.2) +
+  geom_smooth( method = "loess", se = FALSE, size = 1.5) + 
+  labs(x = "Quarter",
+       y = "Log(ppm)")
+
+grid.arrange(eda_year, eda_quarter, ncol=2)
+```
+
+Year effect is not linear. Should consider year as a factor variable.
+
+
+
+```{r}
+df$year = as.factor(df$year)
+df$quarter = as.factor(df$quarter)
+
+mgstr_ppm <- ggplot(df, aes(x = factor(mgstr), y = log(ppm))) + 
+    geom_boxplot(aes(fill = factor(mgstr)), outlier.size = 0.1) + 
+  labs(x = "mgstr") + 
+  theme(legend.position = "none") +
+  coord_flip()
+
+bp_ppm <- ggplot(df, aes(x = bulk_purchase, y = log(ppm))) + 
+    geom_boxplot(aes(fill = bulk_purchase), outlier.size = 0.1) + 
+  labs(x = "Bulk Purchase") + 
+  theme(legend.position = "none") + 
+  coord_flip()
+
+source_ppm <- ggplot(df, aes(x = source, y = log(ppm))) + 
+    geom_boxplot(aes(fill = source), outlier.size = 0.1) + 
+  labs(x = "Source") + 
+  theme(legend.position = "none") +
+  coord_flip()
+
+
+grid.arrange(mgstr_ppm, bp_ppm, source_ppm, ncol=2)
+```
+
+Might have interaction effect..
+
+```{r}
+ggplot(df, aes(x = mgstr, y = log(ppm))) + 
+  geom_point() +
+  geom_smooth( method = "loess") +
+  facet_wrap(~bulk_purchase)
+
+
+ggplot(df, aes(x = mgstr, y = log(ppm))) + 
+  geom_point() +
+  geom_smooth( method = "loess") +
+  facet_wrap(~quarter)
+
+ggplot(df, aes(x = bulk_purchase, y = log(ppm))) + 
+  geom_boxplot() +
+  facet_wrap(~quarter)
+```
+
+
+
+
+
+
+### Model Building & Model Selection
+
+Predictors: year, quarter, mgstr, bulk_purchase, source, 
+Random intercept: state
+Random slope: ? state by 
+
+```{r}
+## whether to include quarter
+
+m1 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 | state), data=df)
+m2 <- lmer(formula = log_ppm ~ year + quarter + mgstr + bulk_purchase + source + (1 | state), data=df)
+anova(m1,m2)
+```
+```{r}
+## whether to include interaction terms
+
+m1 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 | state), data=df)
+m3 <- lmer(formula = log_ppm ~ year +  mgstr*bulk_purchase + source + (1 | state), data=df)
+anova(m1,m3)
+```
+```{r}
+## whether to include random slope
+
+m1 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 | state), data=df)
+m4 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 +  mgstr | state), data=df)
+anova(m1,m4)
+```
+
+```{r}
+## whether to include more random slope - No
+
+m4 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 +  mgstr | state), data=df)
+m5 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 +  mgstr + bulk_purchase| state), data=df)
+
+anova(m4,m5)
+```
+```{r}
+## any systematic way to check the model performance of different combination?
+```
+
+### Model Diagnostics
+
+```{r}
+plot(m4)
+
+residual <- resid(m4)
+
+ggplot() + geom_density(aes(x = residual))
+
+```
+
+
+
+

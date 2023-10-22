@@ -21,6 +21,8 @@ library(lmerTest)
 library(lattice)
 library(merTools)
 library(gridExtra)
+library(mice)
+library(kableExtra)
 ```
 
 ```{r}
@@ -48,8 +50,68 @@ Variables:
 - Dosage strength                             - whether treat it as factor or numeric variable, or group them
 - Bulk Purchase: dummy
 - Primary reason: factor                      - many missing values
+## Missing data imputation
+
+### preprocess data
+```{r}
+# If df == "", them map to NA
+# Replace empty strings with NA
+df[df == ""] <- NA
+md.pattern(df,rotate.names = TRUE)
+```
+At the bottom: total number of missing values by variables.
+On the right: number of variables missing in each pattern.
+On the left: number of cases for each pattern.
+
+Missing data:
+State has 1 missing values, and it has wrong category "USA", so we also map to unknown
+City has 3126 missing values and duplicate entries as well as abbreviations, so we need to preprocess city(or just drop it). 
+source has 3695 missing values and messy website.
+Primary_Reason has 4754 missing values
+
+Next step: preprocess these columns then use mice to impute missing values.
 
 ```{r}
+result <- df %>%
+  group_by(Primary_Reason) %>%
+  summarise(Count = n()) %>%
+  arrange(-Count)  # Sorting in descending order
+
+# Print the sorted table
+kable(result)
+```
+```{r}
+#city
+# # briefly preprocess data for data with over 4 counts.
+# # Convert city names to title case
+# df$city <- str_to_title(df$city)
+# 
+# # Create a mapping for abbreviations and other variations
+# corrections <- data.frame(
+#   original = c("Phx", "Dallas - Fort Worth", "philadelphia Pa", "Sacramento california", "Los Angeles California", "Nashville tn", "San Francisco California City", "saint Louis", "Sf"),
+#   corrected = c("Phoenix", "Dallas", "Philadelphia", "Sacramento", "Los Angeles", "Nashville", "San Francisco", "Saint Louis", "San Francisco")
+# )
+# 
+# # Use the mapping to replace city names
+# df <- df %>%
+#   left_join(corrections, by = c("city" = "original")) %>%
+#   mutate(city = ifelse(is.na(corrected), city, corrected))
+
+```
+
+
+```{r}
+# state
+df <- df%>%
+  mutate(state = case_when(
+    state == "USA" ~ "Unknown",
+    is.na(state) ~ "Unknown",
+    TRUE ~ state
+  ))
+```
+
+```{r}
+# source
 df$source <- as.character(df$source)
 df$source <- ifelse(grepl("^http", df$source), "Internet", df$source)
 
@@ -59,13 +121,15 @@ freq_df_source[freq_df_source$Frequency > 50, ]
 
 df <- df %>%
   mutate(source = case_when(
-    is.null(source)  ~ "Unknown", ## doesn't work
-    is.na(source)  ~ "Unknown",
-    source == "" ~ "Unknown",
+    # is.null(source)  ~ "Unknown", ## doesn't work
+    # is.na(source)  ~ "Unknown",
+    # source == "" ~ "Unknown",
     source == "Heard it" ~ "Heard it",
     source == "Personal" ~ "Personal",
-    source == "L" ~ "Unknown",
-    TRUE ~ "Internet"
+    source == "Internet Pharmacy" ~ "Internet Pharmacy",
+    !is.na(source) & source != "Personal" & source != "Heard it" & source != "Internet Pharmacy" ~ "Internet",
+    source == "L" ~ NA,
+    TRUE ~ source
   ))
 
 
@@ -101,7 +165,11 @@ df$quarter = as.numeric(substr(df$yq_pdate, nchar(df$yq_pdate), nchar(df$yq_pdat
 df <- df %>% filter(year>=2010)
 ```
 
-
+```{r}
+table(df$source)
+table(df$state)
+table(df$USA_region)
+```
 
 ```{r}
 # log ppm
@@ -116,6 +184,56 @@ grid.arrange(hist_ppm, hist_log_ppm, ncol=2)
 
 df <- df %>% filter(ppm > 0)
 ```
+
+### Imputation
+
+We assume that the data is MAR, the next step is to build models to predict missing data from observed data.
+One problem: city has over 50 categories and is messed up with duplicate and abbreviation, so here we will drop city and focus on factor variables: state, USA_region
+
+```{r}
+library(VIM)
+aggr(df,col=c("lightblue3","darkred"),numbers=TRUE,sortVars=TRUE,
+labels=names(df),cex.axis=.7,gap=3,
+ylab=c("Proportion missing","Missingness pattern"))
+```
+The typical sequence of steps to perform a multiple imputation analysis is:
+
+1) Impute the missing data by the mice() function, resulting in a multiple imputed data set (class mids);
+
+2) Fit the model of interest (scientific model) on each imputed data set by the with() function, resulting an object of class mira;
+
+3) Pool the estimates from each model into a single set of estimates and standard errors, resulting in an object of class mipo;
+
+4) Optionally, compare pooled estimates from different scientific models by the D1() or D3() functions.
+```{r}
+#drop city
+df <- subset(df, select = -city)
+# multiple impute the missing values
+imp <- mice(df, maxit = 2, m = 2, seed = 1)
+```
+
+```{r}
+fit <- with(imp,  lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 | state)))
+tab <- summary(pool(fit), "all", conf.int = TRUE)
+as.numeric(tab[tab$term == "year", c("estimate", "2.5 %", "97.5 %")])
+```
+
+
+```{r}
+fit3 <- with(imp, anova(lmer(log_ppm ~ year +  mgstr + bulk_purchase + source+ (1 | state))))
+```
+
+
+
+
+
+
+
+
+
+
+
+
 ```{r}
 ### random intercept
 

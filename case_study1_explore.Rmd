@@ -97,6 +97,9 @@ kable(result)
 #   left_join(corrections, by = c("city" = "original")) %>%
 #   mutate(city = ifelse(is.na(corrected), city, corrected))
 
+#drop city
+df <- subset(df, select = -city)
+
 ```
 
 
@@ -206,29 +209,37 @@ The typical sequence of steps to perform a multiple imputation analysis is:
 
 4) Optionally, compare pooled estimates from different scientific models by the D1() or D3() functions.
 ```{r}
-#drop city
-df <- subset(df, select = -city)
 # multiple impute the missing values
-imp <- mice(df, maxit = 2, m = 2, seed = 1)
+imp <- mice(df, seed = 1)
 ```
+
+### model selection
+
+The standard multiple imputation scheme consists of three phases:
+
+1. Imputation of the missing data m = 5 times;
+
+2. Analysis of the m = 5 imputed datasets;
+
+3. Pooling of the parameters across m = 5 analyses.
+
+
+
+
 
 ```{r}
-fit <- with(imp,  lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 | state)))
-tab <- summary(pool(fit), "all", conf.int = TRUE)
-as.numeric(tab[tab$term == "year", c("estimate", "2.5 %", "97.5 %")])
+fit.without <- with(imp, lm(log_ppm ~ year +  mgstr + bulk_purchase + source))
+fit.with <- with(imp, lm(log_ppm ~ year +  quarter + mgstr + bulk_purchase + source))
+D3(fit.with, fit.without)
 ```
-
+The  p-value is equal to 0.1354, so quarter is not needed in the model.
 
 ```{r}
-fit3 <- with(imp, anova(lmer(log_ppm ~ year +  mgstr + bulk_purchase + source+ (1 | state))))
+summary(pool(fit.without))
 ```
-
-
-
-
-
-
-
+```{r}
+histogram(~log_ppm|quarter,data = df)
+```
 
 
 
@@ -237,11 +248,58 @@ fit3 <- with(imp, anova(lmer(log_ppm ~ year +  mgstr + bulk_purchase + source+ (
 ```{r}
 ### random intercept
 
-ggplot(df, aes(x=log_ppm, y=reorder(state, state, length))) +
+state_ppm <- ggplot(df, aes(x=log_ppm, y=reorder(state, state, length))) +
   geom_boxplot(outlier.size = 0.1) +
   labs(title="Log(ppm) by State", x = "Log(ppm)", y = "State")
 
+usaregion_ppm <- ggplot(df, aes(x=log_ppm, y=reorder(USA_region, USA_region, length))) +
+  geom_boxplot(outlier.size = 0.1) +
+  labs(title="Log(ppm) by USA_region", x = "Log(ppm)", y = "USA_region")
+
+state_ppm
+usaregion_ppm
 ```
+```{r}
+fit <- with(imp, anova(lmer(log_ppm ~ year +  mgstr + bulk_purchase + source + (1|state)),
+                               lmer(log_ppm ~ year + mgstr + quarter + bulk_purchase + source + (1|state))))
+#AIC
+mean(summary(fit)$AIC[c(1,3,5,7,9)])
+mean(summary(fit)$AIC[c(2,4,6,8,10)])
+
+#BIC
+print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
+print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
+
+```
+
+```{r}
+fit <- with(imp, anova(lmer(log_ppm ~ year +  mgstr + bulk_purchase + source + (1|state)),
+                               lmer(log_ppm ~ year + mgstr  + bulk_purchase + source + (1|USA_region))))
+#AIC
+mean(summary(fit)$AIC[c(1,3,5,7,9)])
+mean(summary(fit)$AIC[c(2,4,6,8,10)])
+
+#BIC
+print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
+print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
+
+```
+use state as group factor
+```{r}
+fit <- with(imp, anova(lmer(log_ppm ~  mgstr + bulk_purchase + source + (1|state)),
+                               lmer(log_ppm ~ year + mgstr  + bulk_purchase + source + (1|state))))
+#AIC
+mean(summary(fit)$AIC[c(1,3,5,7,9)])
+mean(summary(fit)$AIC[c(2,4,6,8,10)])
+
+#BIC
+print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
+print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
+
+```
+need year factor
+
+
 
 ```{r}
 eda_year = ggplot(data = df %>% filter(year>2009), aes(x = year, y = log_ppm)) +
@@ -310,7 +368,18 @@ ggplot(df, aes(x = bulk_purchase, y = log(ppm))) +
   facet_wrap(~quarter)
 ```
 
+```{r}
+fit <- with(imp, anova(lmer(log_ppm ~  year + mgstr * bulk_purchase +  source + (1+ year|state)),
+                               lmer(log_ppm ~ year + mgstr *mgstr  + bulk_purchase + source + (1|state))))
+#AIC
+mean(summary(fit)$AIC[c(1,3,5,7,9)])
+mean(summary(fit)$AIC[c(2,4,6,8,10)])
 
+#BIC
+print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
+print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
+
+```
 
 
 

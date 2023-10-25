@@ -169,6 +169,7 @@ kable(result)
 ```
 
 ```{r}
+df$source_imp <- df$source
 df$source <- as.character(df$source)
 df$source <- ifelse(grepl("^http", df$source), "Internet", df$source)
 
@@ -182,6 +183,7 @@ df <- df %>%
     source == "L" ~  "Unknown",
     TRUE ~ "Internet"
   ))
+
 
 source_ppm <- ggplot(df, aes(x = source_group, y = log(ppm))) + 
     geom_boxplot(aes(fill = source_group), outlier.size = 0.1) + 
@@ -241,6 +243,11 @@ result <- df %>%
 
 # Print the sorted table
 kable(result)
+```
+
+9)
+```{r}
+table(df$form_temp) ## almost all are pill/tablet -> not include it in the model
 ```
 
 
@@ -337,28 +344,14 @@ dotplot(ranef(m7,condVar=TRUE), scales = list(x = list(relation = 'free')))$stat
 ```
 
 
-To do:
-
-1. Missing data imputation + Adding source into the model and compare BIC
-2. Outliers or influential points
-3. Model diagnostics
-4. Model interpretation + Results visualization
-
-
-
-
-
-
-
-
 
 ## Missing data imputation
-
+Even though we choose to drop source variable, we decide to check if source useful after we impute missing data of source. We will use MICE to do missing data imputation. Let's first look into EDA of missing values.
 ### preprocess data
 ```{r}
 # If df == "", them map to NA
 # Replace empty strings with NA
-df[df == ""] <- NA
+df$source_imp[df$source_imp == ""] <- NA
 md.pattern(df,rotate.names = TRUE)
 ```
 At the bottom: total number of missing values by variables.
@@ -366,149 +359,52 @@ On the right: number of variables missing in each pattern.
 On the left: number of cases for each pattern.
 
 Missing data:
-State has 1 missing values, and it has wrong category "USA", so we also map to unknown
-City has 3126 missing values and duplicate entries as well as abbreviations, so we need to preprocess city(or just drop it). 
-source has 3695 missing values and messy website.
-Primary_Reason has 4754 missing values # drop? over 60% missing
+1)State has 1 missing values, and it has wrong category "USA", so we also map to unknown
+2)City has 3126 missing values and duplicate entries as well as abbreviations, MICE couldn't handle variable with over 50 catogories, so we drop city. 
+3)source has 3695 missing values and messy website.
+4)Primary_Reason has 4754 missing values # drop it because of over 60% missing rate
 
-Next step: preprocess these columns then use mice to impute missing values.
+
 
 ```{r}
 result <- df %>%
-  group_by(source) %>%
+  group_by(source_imp) %>%
   summarise(Count = n()) %>%
   arrange(-Count)  # Sorting in descending order
 
 # Print the sorted table
 kable(result)
 ```
-```{r}
-#city
-# # briefly preprocess data for data with over 4 counts.
-# # Convert city names to title case
-# df$city <- str_to_title(df$city)
-# 
-# # Create a mapping for abbreviations and other variations
-# corrections <- data.frame(
-#   original = c("Phx", "Dallas - Fort Worth", "philadelphia Pa", "Sacramento california", "Los Angeles California", "Nashville tn", "San Francisco California City", "saint Louis", "Sf"),
-#   corrected = c("Phoenix", "Dallas", "Philadelphia", "Sacramento", "Los Angeles", "Nashville", "San Francisco", "Saint Louis", "San Francisco")
-# )
-# 
-# # Use the mapping to replace city names
-# df <- df %>%
-#   left_join(corrections, by = c("city" = "original")) %>%
-#   mutate(city = ifelse(is.na(corrected), city, corrected))
-
-#drop city
-df <- subset(df, select = -city)
-
-```
 
 
-```{r}
-# state
-df <- df%>%
-  mutate(state = case_when(
-    state == "USA" ~ "Unknown",
-    is.na(state) ~ "Unknown",
-    TRUE ~ state
-  ))
-```
+We need to group source_imp.
 
 ```{r}
 # source
-df$source <- as.character(df$source)
-df$source <- ifelse(grepl("^http", df$source), "Internet", df$source)
-
-freq_df_source <- as.data.frame(table(df$source))
-colnames(freq_df_source) <- c("Value", "Frequency")
-freq_df_source[freq_df_source$Frequency > 50, ]
+df$source_imp <- as.character(df$source_imp)
+df$source_imp <- ifelse(grepl("^http", df$source_imp), "Internet", df$source_imp)
 
 df <- df %>%
-  mutate(source = case_when(
-    # is.null(source)  ~ "Unknown", ## doesn't work
-    # is.na(source)  ~ "Unknown",
-    # source == "" ~ "Unknown",
-    source == "Heard it" ~ "Heard it",
-    source == "Personal" ~ "Personal",
-    source == "Internet Pharmacy" ~ "Internet Pharmacy",
-    !is.na(source) & source != "Personal" & source != "Heard it" & source != "Internet Pharmacy" ~ "Internet",
-    source == "L" ~ NA,
-    TRUE ~ source
+  mutate(source_imp = case_when(
+    source_imp == "Heard it" ~ "Heard it",
+    source_imp == "Personal" ~ "Personal",
+    source_imp == "Internet Pharmacy" ~ "Internet Pharmacy",
+    !is.na(source_imp) & source_imp != "Personal" & source_imp != "Heard it" & source_imp != "Internet Pharmacy" ~ "Internet",
+    source_imp == "L" ~ NA,
+    TRUE ~ source_imp
   ))
 
+df$source_imp <- as.factor(df$source_imp)
 
-table(df$form_temp) ## almost all are pill/tablet -> not include it in the model
-table(df$mgstr) ## whether treat it as factor or numeric variable, or group them
-table(df$bulk_purchase)
-table(df$Primary_Reason) ## many missing values -> not include it in the model
+result <- df %>%
+  group_by(source_imp) %>%
+  summarise(Count = n()) %>%
+  arrange(-Count)  # Sorting in descending order
 
-# remove states with 1 observation
-df <- df %>%
-  group_by(state) %>%
-  mutate(count = n()) %>%
-  filter(count > 1) 
-table(df$state)
-
-
-# code factors and numeric variables 
-df <- df %>%
-  mutate(ppm = as.numeric(ppm), 
-         price_date = mdy(price_date),
-         year = year(price_date),
-         state = as.factor(state),
-         country = as.factor(country),
-         USA_region = as.factor(USA_region),
-         source = as.factor(source),
-         mgstr = as.numeric(mgstr),
-         bulk_purchase = as.factor(bulk_purchase)
-         )
-
-df$quarter = as.numeric(substr(df$yq_pdate, nchar(df$yq_pdate), nchar(df$yq_pdate)))
+# Print the sorted table
+kable(result)
 ```
 
-
-### year and quarter
-
-Do we need to include year or quarter?
-
-```{r}
-eda_year = ggplot(data = df %>% filter(year>2009), aes(x = year, y = log_ppm)) +
-  geom_point(size = 0.5, alpha = 0.5) +   
-  geom_line(size = 0.5, alpha = 0.2) +
-  geom_smooth( method = "loess", se = FALSE, size = 1.5) + 
-  labs(x = "Year",
-       y = "Log(ppm)")
-
-eda_quarter = ggplot(data = df %>% filter(year>2009), aes(x = quarter, y = log_ppm)) +
-  geom_point(size = 0.5, alpha = 0.5) +   
-  geom_line(size = 0.5, alpha = 0.2) +
-  geom_smooth( method = "loess", se = FALSE, size = 1.5) + 
-  labs(x = "Quarter",
-       y = "Log(ppm)")
-
-grid.arrange(eda_year, eda_quarter, ncol=2)
-```
-
-Year effect is not linear. Should consider year as a factor variable.
-
-Treat year as factor
-```{r}
-# year 
-# observations before 2010 are bare
-df <- df %>% filter(year>=2010)
-df$year <- as.factor(df$year)
-
-#quarter
-
-df$quarter <- as.factor(df$quarter)
-```
-
-```{r}
-table(df$source)
-table(df$state)
-table(df$USA_region)
-```
 
 
 
@@ -516,7 +412,7 @@ table(df$USA_region)
 
 We assume that the data is MAR, the next step is to use MICE to impute missing data.
 
-One problem: city has over 50 categories and is messed up with duplicate and abbreviation, so here we will drop city and focus on factor variables: state, USA_region
+One problem: city has over 50 categories and is messed up with duplicate and abbreviation, so here we will drop city. 
 
 ```{r}
 library(VIM)
@@ -534,8 +430,8 @@ The typical sequence of steps to perform a multiple imputation analysis is:
 
 4) Optionally, compare pooled estimates from different scientific models by the D1() or D3() functions.
 ```{r}
-# multiple impute the missing values
-imp <- mice(df,m =5, seed = 1)
+# multiple impute the missing values, drop city
+imp <- mice(df %>% subset( select = -city)%>% filter(year>2009 & state!="Unknown"),m =5, seed = 1)
 ```
 
 ### model selection
@@ -548,286 +444,45 @@ The standard multiple imputation scheme consists of three phases:
 
 3. Pooling of the parameters across m = 5 analyses.
 
+The final model we have selected is 
+m7 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m7 BIC is 22815.
 
-
-
-
-```{r}
-fit.without <- with(imp, lm(log_ppm ~ year +  mgstr + bulk_purchase + source))
-fit.with <- with(imp, lm(log_ppm ~ year +  quarter + mgstr + bulk_purchase + source))
-D3(fit.with, fit.without)
-```
-The  p-value is equal to 0.1354, so quarter is not needed in the model.
-
-```{r}
-summary(pool(fit.without))
-```
-```{r}
-histogram(~log_ppm|state,data = df)
-```
-need random effect
-
-
+We compare m7 with models that include the source imputed by MICE.
 
 
 ```{r}
-### random intercept
-state_ppm <- ggplot(df, aes(x=log_ppm, y=reorder(state, state, length))) +
-  geom_boxplot(outlier.size = 0.1) +
-  labs(title="Log(ppm) by State", x = "Log(ppm)", y = "State")
+# Use imputated source variable
+fit.with <- with(imp, anova(lmer(log_ppm ~ mgstr_factor + bulk_purchase + (1 | state)),
+                               lmer(log_ppm ~ mgstr_factor + bulk_purchase + source_imp + (1 | state))))
 
-usaregion_ppm <- ggplot(df, aes(x=log_ppm, y=reorder(USA_region, USA_region, length))) +
-  geom_boxplot(outlier.size = 0.1) +
-  labs(title="Log(ppm) by USA_region", x = "Log(ppm)", y = "USA_region")
-
-state_ppm
-usaregion_ppm
-```
-
-use state as random intercept
-
-```{r}
-#source
-fit <- with(imp, anova(lmer(log_ppm ~ year + mgstr + quarter + bulk_purchase  + (1|state)),
-                               lmer(log_ppm ~ year + mgstr + quarter + bulk_purchase + source + (1|state))))
-
-summary(fit)
-#AIC
-mean(summary(fit)$AIC[c(1,3,5,7,9)])
-mean(summary(fit)$AIC[c(2,4,6,8,10)])
+summary(fit.with)
 
 #BIC
-print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
-print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
+print(mean(summary(fit.with)$BIC[c(1,3,5,7,9)]))
+print(mean(summary(fit.with)$BIC[c(2,4,6,8,10)]))
 
 ```
+The average BIC on model: lmer(log_ppm ~ mgstr_factor + bulk_purchase + source_imp + (1 | state) is 22816>22815, so the model built with imputed source variable doesn't perform better. We conclude that using m7 model on original data performs better.
 
 
-```{r}
-#quarter
-fit <- with(imp, anova(lmer(log_ppm ~ year + mgstr + quarter + bulk_purchase + source + (1|state)),
-                               lm(log_ppm ~ year + mgstr + quarter + bulk_purchase + source + state)))
+To do:
 
-summary(fit)
-#AIC
-mean(summary(fit)$AIC[c(1,3,5,7,9)])
-mean(summary(fit)$AIC[c(2,4,6,8,10)])
-
-#BIC
-print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
-print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
-
-```
-
-go random effect
-
-```{r}
-#quarter
-fit <- with(imp, anova(lmer(log_ppm ~ year +  mgstr + bulk_purchase + source + (1|state)),
-                               lmer(log_ppm ~ year + mgstr + quarter + bulk_purchase + source + (1|state))))
-
-summary(fit)
-#AIC
-mean(summary(fit)$AIC[c(1,3,5,7,9)])
-mean(summary(fit)$AIC[c(2,4,6,8,10)])
-
-#BIC
-print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
-print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
-
-```
-drop quarter
-
-```{r}
-#USA_region VS. state
-fit <- with(imp, anova(lmer(log_ppm ~ year +  mgstr + bulk_purchase + source + (1|state)),
-                               lmer(log_ppm ~ year + mgstr  + bulk_purchase + source + (1|USA_region))))
-#AIC
-mean(summary(fit)$AIC[c(1,3,5,7,9)])
-mean(summary(fit)$AIC[c(2,4,6,8,10)])
-
-#BIC
-print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
-print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
-
-```
-use state as random intercept
-```{r}
-fit <- with(imp, anova(lmer(log_ppm ~  mgstr + bulk_purchase + source + (1|state)),
-                               lmer(log_ppm ~ year + mgstr  + bulk_purchase + source + (1|state))))
-
-
-#AIC
-mean(summary(fit)$AIC[c(1,3,5,7,9)])
-mean(summary(fit)$AIC[c(2,4,6,8,10)])
-
-#BIC
-print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
-print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
-
-summary(fit)
-
-```
-Do we need year factor?
-Drop year
+1. Missing data imputation + Adding source into the model and compare BIC(done)
+2. Outliers or influential points
+3. Model diagnostics
+4. Model interpretation + Results visualization
 
 
 
-
-```{r}
-df$year = as.factor(df$year)
-df$quarter = as.factor(df$quarter)
-
-mgstr_ppm <- ggplot(df, aes(x = factor(mgstr), y = log(ppm))) + 
-    geom_boxplot(aes(fill = factor(mgstr)), outlier.size = 0.1) + 
-  labs(x = "mgstr") + 
-  theme(legend.position = "none") +
-  coord_flip()
-
-bp_ppm <- ggplot(df, aes(x = bulk_purchase, y = log(ppm))) + 
-    geom_boxplot(aes(fill = bulk_purchase), outlier.size = 0.1) + 
-  labs(x = "Bulk Purchase") + 
-  theme(legend.position = "none") + 
-  coord_flip()
-
-source_ppm <- ggplot(df, aes(x = source, y = log(ppm))) + 
-    geom_boxplot(aes(fill = source), outlier.size = 0.1) + 
-  labs(x = "Source") + 
-  theme(legend.position = "none") +
-  coord_flip()
-
-
-grid.arrange(mgstr_ppm, bp_ppm, source_ppm, ncol=2)
-```
-
-Might have interaction effect..
-
-```{r}
-ggplot(df, aes(x = mgstr, y = log(ppm))) + 
-  geom_point() +
-  geom_smooth( method = "loess") +
-  facet_wrap(~bulk_purchase)
-
-
-ggplot(df, aes(x = mgstr, y = log(ppm))) + 
-  geom_point() +
-  geom_smooth( method = "loess") +
-  facet_wrap(~quarter)
-
-ggplot(df, aes(x = bulk_purchase, y = log(ppm))) + 
-  geom_boxplot() +
-  facet_wrap(~quarter)
-```
-
-```{r}
-fit <- with(imp, anova(lmer(log_ppm ~    mgstr+bulk_purchase +  source + (1+mgstr|state) ),
-                               lmer(log_ppm ~   mgstr  + bulk_purchase + source + (1|state))))
-#AIC
-mean(summary(fit)$AIC[c(1,3,5,7,9)])
-mean(summary(fit)$AIC[c(2,4,6,8,10)])
-
-#BIC
-print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
-print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
-
-summary(fit)
-```
-```{r}
-fit <- with(imp, anova(lmer(log_ppm ~    mgstr+bulk_purchase +  source + (1+bulk_purchase+mgstr|state) ),
-                               lmer(log_ppm ~   mgstr  + bulk_purchase + source + (1+mgstr|state) )))
-#AIC
-mean(summary(fit)$AIC[c(1,3,5,7,9)])
-mean(summary(fit)$AIC[c(2,4,6,8,10)])
-
-#BIC
-print(mean(summary(fit)$BIC[c(1,3,5,7,9)]))
-print(mean(summary(fit)$BIC[c(2,4,6,8,10)]))
-summary(fit)
-```
-```{r}
-table(df$mgstr)
-```
-```{r}
-ggplot(df, aes(x = mgstr, y = log(ppm))) + 
-  geom_point() +
-  geom_smooth( method = "loess")
-```
-```{r}
-df$mgstr_factor <- as.factor(df$mgstr)
-```
-
-```{r}
-# mgstr factor
-m1 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1  | state), data=df)
-m2 <- lmer(formula = log_ppm ~ year +  mgstr_factor + bulk_purchase + source + (1  | state), data=df)
-
-anova(m1,m2)
-```
-```{r}
-# source 
-
-df <- df %>%
-  mutate(source = case_when(
-    is.na(source)  ~ "Unknown",
-    TRUE ~ source
-  ))
-
-
-
-m3 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + (1  | state), data=df)
-m4 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1  | state), data=df)
-
-anova(m3,m4)
-```
-
-### Model Building & Model Selection
-
-Predictors: year, quarter, mgstr, bulk_purchase, source, 
-Random intercept: state
-Random slope: ? state by 
-
-```{r}
-## whether to include quarter
-
-m1 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 | state), data=df)
-m2 <- lmer(formula = log_ppm ~ year + quarter + mgstr + bulk_purchase + source + (1 | state), data=df)
-anova(m1,m2)
-```
-```{r}
-## whether to include interaction terms
-
-m1 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 | state), data=df)
-m3 <- lmer(formula = log_ppm ~ year +  mgstr*bulk_purchase + source + (1 | state), data=df)
-anova(m1,m3)
-```
-```{r}
-## whether to include random slope
-
-m1 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 | state), data=df)
-m4 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 +  mgstr | state), data=df)
-anova(m1,m4)
-```
-
-```{r}
-## whether to include more random slope - No
-
-m4 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 +  mgstr | state), data=df)
-m5 <- lmer(formula = log_ppm ~ year +  mgstr + bulk_purchase + source + (1 +  mgstr + bulk_purchase| state), data=df)
-
-anova(m4,m5)
-```
-```{r}
-## any systematic way to check the model performance of different combination?
-```
 
 ### Model Diagnostics
 
 ```{r}
-plot(m4)
+plot(m7)
 
-residual <- resid(m4)
+residual <- resid(m7)
 
-ggplot() + geom_density(aes(x = residual))
 
 ```
 

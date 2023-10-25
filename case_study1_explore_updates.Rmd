@@ -478,14 +478,63 @@ To do:
 
 ### Model Diagnostics
 
+### Residual Analysis
 ```{r}
-plot(m7)
-
-residual <- resid(m7)
-
-
+# Plot residuals vs. fitted values
+plot(m7,col=c("blue4"))
 ```
 
+```{r}
+plot(density(residuals(m7)),xlab="Residual",main="",col=c("blue4"))
+```
+
+```{r}
+## QQ plot
+qqnorm(resid(m7))
+qqline(resid(m7))
+```
+
+
+### Evaluation 3 plots
+\begin{enumerate}
+  \item The residual distribution plot and residual vs. fitted values plot tell that the model follows constant variance assumption..
+  \item In Q-Q plot, we can see that the residuals tend to stray from the line quite a bit near the tails, which could indicate that they’re not normally distributed.So the model violate the normality assumption
+\end{enumerate}
+
+
+
+###  ICC
+
+Uncertainty quantification around effect estimates of interest
+
+
+```{r}
+summary(m7)
+```
+### Evaluation
+
+\begin{enumerate}
+  \item The estimated standard error $\sigma = 0.8931$ describes the within-state or remaining unexplained variation.
+  \item The estimated $\tau = 0.1187$ describes the across-state variation attributed to the random intercept.
+ \item We can see that the variation between state is small compared to the variation within state.
+$$\tau^2 = 0.01408, \sigma^2 = 0.79763$$
+So, $ICC = \frac{\tau^2}{\sigma^2+\tau^2} = \frac{0.01408}{0.79763+0.01408} = 0.017$
+The ICC is 0.017 so that we almost have no correlation between ppm in the same state. 
+
+\end{enumerate}
+
+
+### Confidence Interval
+
+```{r}
+# Get confidence intervals for fixed effects (including intercept, numbeds, control)
+fixed_effects_ci <- confint(m7, parm = "beta_")
+# Display confidence intervals
+colnames(fixed_effects_ci) = c( "lower bound", "upper bound")
+kable(fixed_effects_ci)
+
+```
+The confidence interval for  fixed effect is listed above
 
 
 

@@ -537,16 +537,16 @@ outliers_removed$ppm
 m7 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
 m10 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 + bulk_purchase | state), data=outliers_removed)
 
-#compare AIC  for influential points analysis
-aic_m7 = AIC(m7)
-aic_m10 = AIC(m10)
+#compare BIC  for influential points analysis
+bic_m7 = BIC(m7)
+bic_m10 = BIC(m10)
 
-if (aic_m7 < aic_m10 ) {
-  cat("AIC is lower for the orginal model ")
-} else if (aic_m7 > aic_m10) {
-  cat("AIC is lower for the model adjusted for the outliers")
+if (bic_m7 < bic_m10 ) {
+  cat("BIC is lower for the orginal model ")
+} else if (bic_m7 > bic_m10) {
+  cat("BIC is lower for the model adjusted for the outliers")
 } else {
-  cat("AIC is the same for both datasets")
+  cat("BIC is the same for both datasets")
 }
 
 

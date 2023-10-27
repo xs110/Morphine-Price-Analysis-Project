@@ -1,0 +1,602 @@
+---
+title: "Case Study 1 - Explore"
+author: "Weiting Miao"
+date: "2023-10-16"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.align = 'center')
+```
+
+
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(car)
+library(lme4)
+library(lmerTest)
+library(lattice)
+library(merTools)
+library(gridExtra)
+library(mice)
+library(kableExtra)
+library(influence.ME)
+library(mgcv)
+```
+
+```{r}
+#load data
+load("streetrx.RData")
+df <- streetrx %>%
+  filter(api_temp == "morphine", !is.na(ppm))
+```
+
+### Questions of Interest
+To investigate factors related to the price per mg of your drug, accounting for potential clustering by location and exploring heterogeneity in pricing by location.
+
+### Data Cleaning
+
+Variables:
+
+- Outcome variable: ppm
+- Purchasing time: year, month, day, quarter
+- Location: country, state, city, USA_region  - country: all US; city: many missing
+- Source: source of information               - Unknown
+- Formulation of the drug: factor             - no variation, drop it
+- Dosage strength                             - whether treat it as factor or numeric variable, or group them
+- Bulk Purchase: dummy
+- Primary reason: factor                      - many missing values
+
+(1). Drop observations if the outcome variable is missing
+
+
+```{r}
+# log ppm
+df$log_ppm <- log(df$ppm)
+
+hist_ppm <- ggplot(df, aes(x=ppm)) + 
+ geom_histogram(aes(y=..density..), colour="black", fill="white", bins = 50)
+
+hist_log_ppm <- ggplot(df, aes(x=log_ppm)) + 
+ geom_histogram(aes(y=..density..), colour="black", fill="white", bins = 50)
+grid.arrange(hist_ppm, hist_log_ppm, ncol=2)
+
+df <- df %>% filter(ppm > 0)
+```
+
+
+(2). Drop variables without any variation - country, formulation
+
+(3). Remove states with 1 observation, otherwise, we cannot estimate the within-group variance for these states. State has 1 missing values, and it has wrong category "USA". Since our goal is to understand the heterogeneity across locations, we remove observations with "USA" as the state name. City has a lot of missing values, so we will focus on the heterogeneity across states.
+
+```{r}
+result <- df %>%
+  group_by(state) %>%
+  summarise(Count = n()) %>%
+  arrange(-Count)  # Sorting in descending order
+
+# Print the sorted table
+kable(result)
+
+
+# remove states with 1 observation
+df <- df %>%
+  group_by(state) %>%
+  mutate(count = n()) %>%
+  filter(count > 1) 
+
+# state
+df <- df%>%
+  mutate(state = case_when(
+    state == "USA" ~ "Unknown",
+    is.na(state) ~ "Unknown",
+    TRUE ~ state
+  ))
+
+# df <- df%>%filter(state!="Unknown")
+```
+
+
+```{r}
+result <- df %>%
+  group_by(USA_region) %>%
+  summarise(Count = n()) %>%
+  arrange(-Count)  # Sorting in descending order
+
+# Print the sorted table
+kable(result)
+```
+
+```{r}
+df <- df %>%
+  mutate(state = as.factor(state),
+         USA_region = as.factor(USA_region))
+
+```
+
+
+(4). Create year and quarter variables. Very limited observations before year 2010. Given the nonlinear effects of year and quarter, we consider to treat year and quarter as factor variables.
+
+```{r}
+df <- df %>%
+  mutate(price_date = mdy(price_date),
+         year = year(price_date))
+
+df$quarter = as.numeric(substr(df$yq_pdate, nchar(df$yq_pdate), nchar(df$yq_pdate)))
+
+df <- df %>%
+  mutate(year_factor = as.factor(year),
+         quarter_factor = as.factor(quarter))
+
+
+eda_year = ggplot(data = df %>% filter(year>2009), aes(x = year, y = log_ppm)) +
+  geom_point(size = 0.5, alpha = 0.5) +   
+  geom_line(size = 0.5, alpha = 0.2) +
+  geom_smooth( method = "loess", se = FALSE, size = 1.5) + 
+  labs(x = "Year",
+       y = "Log(ppm)")
+
+eda_quarter = ggplot(data = df %>% filter(year>2009), aes(x = quarter, y = log_ppm)) +
+  geom_point(size = 0.5, alpha = 0.5) +   
+  geom_line(size = 0.5, alpha = 0.2) +
+  geom_smooth( method = "loess", se = FALSE, size = 1.5) + 
+  labs(x = "Quarter",
+       y = "Log(ppm)")
+
+grid.arrange(eda_year, eda_quarter, ncol=2)
+
+```
+
+```{r}
+histogram(~log_ppm|quarter_factor,data = df)
+```
+
+Quarter doesn't seem to be important.
+
+
+(5). Source: from the raw data, most can be coded as "Internet".
+
+```{r}
+result <- df %>%
+  group_by(source) %>%
+  summarise(Count = n()) %>%
+  arrange(-Count)  # Sorting in descending order
+
+# Print the sorted table
+kable(result)
+```
+
+```{r}
+df$source_imp <- df$source
+df$source <- as.character(df$source)
+df$source <- ifelse(grepl("^http", df$source), "Internet", df$source)
+
+
+df <- df %>%
+  mutate(source_group = case_when(
+    source == "" ~ "Unknown",
+    source == "Heard it" ~ "Heard it",
+    source == "Personal" ~ "Personal",
+    source == "Internet Pharmacy" ~ "Internet Pharmacy",
+    source == "L" ~  "Unknown",
+    TRUE ~ "Internet"
+  ))
+
+
+source_ppm <- ggplot(df, aes(x = source_group, y = log(ppm))) + 
+    geom_boxplot(aes(fill = source_group), outlier.size = 0.1) + 
+  labs(x = "Source") + 
+  theme(legend.position = "none") +
+  coord_flip()
+source_ppm
+```
+
+(6). Dosage strength: should we group them?
+
+```{r}
+table(df$mgstr)
+
+df <- df %>%
+  mutate(mgstr = as.numeric(mgstr),
+         mgstr_factor = as.factor(mgstr))
+
+mgstr_ppm_factor <- ggplot(df, aes(x = factor(mgstr), y = log(ppm))) + 
+    geom_boxplot(aes(fill = factor(mgstr)), outlier.size = 0.1) + 
+  labs(x = "mgstr") + 
+  theme(legend.position = "none") +
+  coord_flip()
+
+mgstr_ppm = ggplot(data = df%>%filter(mgstr > 5), aes(x = mgstr, y = log_ppm)) +
+  geom_point(size = 0.5, alpha = 0.5) +   
+  geom_line(size = 0.5, alpha = 0.2) +
+  geom_smooth( method = "loess", se = FALSE, size = 1.5) + 
+  labs(x = "mgstr",
+       y = "Log(ppm)")
+
+grid.arrange(mgstr_ppm_factor, mgstr_ppm, ncol=2)
+
+
+#Fit a GAM with a spline for mgstr
+gam_model <- gam(log(ppm) ~ bulk_purchase + s(mgstr) + source, data = df)
+plot.gam(gam_model)
+
+ggplot(data = outliers_removed, mapping = aes(x = mgstr,y = log_ppm)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method="gam", formula= y~s(x, bs = "cs",k=10)) +
+  labs(x ="Dosage", y = "Price per mg")
+  
+
+```
+The effects are mostly monotone and linear except for when mgstr < 10 (5 obs).
+
+
+
+
+(7). Bulk Purchase
+
+```{r}
+df <- df %>%
+  mutate(bulk_purchase = as.factor(bulk_purchase))
+
+bp_ppm <- ggplot(df, aes(x = bulk_purchase, y = log(ppm))) + 
+    geom_boxplot(aes(fill = bulk_purchase), outlier.size = 0.1) + 
+  labs(x = "Bulk Purchase") + 
+  theme(legend.position = "none") + 
+  coord_flip()
+
+bp_ppm
+```
+
+(8). Primary reason: 70% of the observations are NA or didn't answer the question. We decide not to use this variable.
+```{r}
+result <- df %>%
+  group_by(Primary_Reason) %>%
+  summarise(Count = n()) %>%
+  arrange(-Count)  # Sorting in descending order
+
+# Print the sorted table
+kable(result)
+```
+
+9)
+```{r}
+table(df$form_temp) ## almost all are pill/tablet -> not include it in the model
+```
+
+
+
+
+### Model Building & Model Selection
+
+Predictors: year, quarter, mgstr, bulk_purchase, source
+Random intercept: state
+Random slope: 
+
+(1) Random effect or fixed effect?
+```{r}
+m1 <- lm(formula = log_ppm ~ year + quarter_factor +  mgstr + bulk_purchase + source + state, data=df)
+m2 <- lmer(formula = log_ppm ~ year + quarter_factor + mgstr + bulk_purchase + source + (1 | state), data=df)
+BIC(m1)
+BIC(m2)
+```
+
+Random effect model has much smaller BIC
+
+(2) Year as numeric variable or factor variable?
+```{r}
+m2 <- lmer(formula = log_ppm ~ year + quarter_factor  + mgstr + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m3 <- lmer(formula = log_ppm ~ year_factor + quarter_factor  +  mgstr + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+anova(m2,m3)
+```
+Treat it as numerical variable
+
+(3) mgstr as numeric variable or factor variable?
+```{r}
+m2 <- lmer(formula = log_ppm ~ year + quarter_factor  + mgstr + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m4 <- lmer(formula = log_ppm ~ year + quarter_factor  +  mgstr_factor + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+anova(m2,m4)
+```
+Treat mgstr as factor variable
+
+
+(4) Do we need quarter?
+```{r}
+m4 <- lmer(formula = log_ppm ~ year + quarter_factor  +  mgstr_factor + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m5 <- lmer(formula = log_ppm ~ year  +  mgstr_factor + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+anova(m4,m5)
+```
+Quarter doesn't seem to be important. Drop quarter.
+
+(5) Do we need year?
+
+```{r}
+m5 <- lmer(formula = log_ppm ~ year  +  mgstr_factor + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m6 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+anova(m5,m6)
+```
+Year doesn't seem to be important. Drop year.
+
+(6) Do we need source?
+
+```{r}
+m6 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m7 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+anova(m6, m7)
+```
+Adding source into the regression increases BIC, get rid of source
+
+
+(7) Any random slope
+
+```{r}
+m7 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m8 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 + bulk_purchase | state), data=df %>% filter(year>2009 & state!="Unknown"))
+anova(m7, m8)
+```
+
+Having random slope of bulk purchase doesn't improve the performance
+
+
+(8) Any interaction term
+
+```{r}
+m7 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m9 <- lmer(formula = log_ppm ~ mgstr_factor * bulk_purchase + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+anova(m7, m9)
+```
+Not helpful to include the interaction term.
+
+The final model is m7.
+
+```{r}
+## any systematic way to check the model performance of different combination?
+```
+
+```{r}
+dotplot(ranef(m7,condVar=TRUE), scales = list(x = list(relation = 'free')))$state
+```
+
+
+
+## Missing data imputation
+Even though we choose to drop source variable, we decide to check if source useful after we impute missing data of source. We will use MICE to do missing data imputation. Let's first look into EDA of missing values.
+### preprocess data
+```{r}
+# If df == "", them map to NA
+# Replace empty strings with NA
+df$source_imp[df$source_imp == ""] <- NA
+md.pattern(df,rotate.names = TRUE)
+```
+At the bottom: total number of missing values by variables.
+On the right: number of variables missing in each pattern.
+On the left: number of cases for each pattern.
+
+Missing data:
+1)State has 1 missing values, and it has wrong category "USA", so we also map to unknown
+2)City has 3126 missing values and duplicate entries as well as abbreviations, MICE couldn't handle variable with over 50 catogories, so we drop city. 
+3)source has 3695 missing values and messy website.
+4)Primary_Reason has 4754 missing values # drop it because of over 60% missing rate
+
+
+
+```{r}
+result <- df %>%
+  group_by(source_imp) %>%
+  summarise(Count = n()) %>%
+  arrange(-Count)  # Sorting in descending order
+
+# Print the sorted table
+kable(result)
+```
+
+
+We need to group source_imp.
+
+```{r}
+# source
+df$source_imp <- as.character(df$source_imp)
+df$source_imp <- ifelse(grepl("^http", df$source_imp), "Internet", df$source_imp)
+
+df <- df %>%
+  mutate(source_imp = case_when(
+    source_imp == "Heard it" ~ "Heard it",
+    source_imp == "Personal" ~ "Personal",
+    source_imp == "Internet Pharmacy" ~ "Internet Pharmacy",
+    !is.na(source_imp) & source_imp != "Personal" & source_imp != "Heard it" & source_imp != "Internet Pharmacy" ~ "Internet",
+    source_imp == "L" ~ NA,
+    TRUE ~ source_imp
+  ))
+
+df$source_imp <- as.factor(df$source_imp)
+
+result <- df %>%
+  group_by(source_imp) %>%
+  summarise(Count = n()) %>%
+  arrange(-Count)  # Sorting in descending order
+
+# Print the sorted table
+kable(result)
+```
+
+
+
+
+### Imputation
+
+We assume that the data is MAR, the next step is to use MICE to impute missing data.
+
+One problem: city has over 50 categories and is messed up with duplicate and abbreviation, so here we will drop city. 
+
+```{r}
+library(VIM)
+aggr(df,col=c("lightblue3","darkred"),numbers=TRUE,sortVars=TRUE,
+labels=names(df),cex.axis=.7,gap=3,
+ylab=c("Proportion missing","Missingness pattern"))
+```
+The typical sequence of steps to perform a multiple imputation analysis is:
+
+1) Impute the missing data by the mice() function, resulting in a multiple imputed data set (class mids);
+
+2) Fit the model of interest (scientific model) on each imputed data set by the with() function, resulting an object of class mira;
+
+3) Pool the estimates from each model into a single set of estimates and standard errors, resulting in an object of class mipo;
+
+4) Optionally, compare pooled estimates from different scientific models by the D1() or D3() functions.
+```{r}
+# multiple impute the missing values, drop city
+imp <- mice(df %>% subset( select = -city)%>% filter(year>2009 & state!="Unknown"),m =5, seed = 1)
+```
+
+### model selection
+
+The standard multiple imputation scheme consists of three phases:
+
+1. Imputation of the missing data m = 5 times;
+
+2. Analysis of the m = 5 imputed datasets;
+
+3. Pooling of the parameters across m = 5 analyses.
+
+The final model we have selected is 
+m7 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m7 BIC is 22815.
+
+We compare m7 with models that include the source imputed by MICE.
+
+
+```{r}
+# Use imputated source variable
+fit.with <- with(imp, anova(lmer(log_ppm ~ mgstr_factor + bulk_purchase + (1 | state)),
+                               lmer(log_ppm ~ mgstr_factor + bulk_purchase + source_imp + (1 | state))))
+
+summary(fit.with)
+
+#BIC
+print(mean(summary(fit.with)$BIC[c(1,3,5,7,9)]))
+print(mean(summary(fit.with)$BIC[c(2,4,6,8,10)]))
+
+```
+The average BIC on model: lmer(log_ppm ~ mgstr_factor + bulk_purchase + source_imp + (1 | state) is 22816>22815, so the model built with imputed source variable doesn't perform better. We conclude that using m7 model on original data performs better.
+
+
+To do:
+
+1. Missing data imputation + Adding source into the model and compare BIC(done)
+2. Outliers or influential points
+3. Model diagnostics
+4. Model interpretation + Results visualization
+
+
+
+
+### Model Diagnostics
+
+### Residual Analysis
+```{r}
+# Plot residuals vs. fitted values
+plot(m7,col=c("blue4"))
+```
+
+```{r}
+plot(density(residuals(m7)),xlab="Residual",main="",col=c("blue4"))
+```
+
+```{r}
+## QQ plot
+{qqnorm(resid(m7))
+qqline(resid(m7))}
+```
+
+#outliers
+```{r}
+
+# Identify  and remove the influential points
+
+cooksD <- cooks.distance(m7)
+threshold = 0.02
+
+{plot(cooksD, main = "Cook's Distance for Influential Observation")
+abline(h =threshold, lty = 2, col = "red") }
+influential_points <- which(cooksD > threshold)
+
+outliers_removed <- df[-influential_points, ]
+
+#outlier removal
+
+lower_bound <- quantile(outliers_removed[["ppm"]], 0.01)
+upper_bound <- quantile(outliers_removed[["ppm"]], 0.99)
+
+# Remove outliers based on quantiles
+outliers_removed <- outliers_removed %>%
+  filter(ppm>= lower_bound & ppm<= upper_bound)
+outliers_removed$ppm
+
+m7 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+m10 <- lmer(formula = log_ppm ~ mgstr_factor + bulk_purchase + (1 + bulk_purchase | state), data=outliers_removed)
+
+#compare AIC  for influential points analysis
+aic_m7 = AIC(m7)
+aic_m10 = AIC(m10)
+
+if (aic_m7 < aic_m10 ) {
+  cat("AIC is lower for the orginal model ")
+} else if (aic_m7 > aic_m10) {
+  cat("AIC is lower for the model adjusted for the outliers")
+} else {
+  cat("AIC is the same for both datasets")
+}
+
+
+plot(m10,col=c("blue4"))
+{qqnorm(resid(m10))
+qqline(resid(m10))}
+
+```
+
+
+### Evaluation 3 plots
+\begin{enumerate}
+  \item The residual distribution plot and residual vs. fitted values plot tell that the model follows constant variance assumption..
+  \item In Q-Q plot, we can see that the residuals tend to stray from the line quite a bit near the tails, which could indicate that they’re not normally distributed.So the model violate the normality assumption
+\end{enumerate}
+
+
+
+###  ICC
+
+Uncertainty quantification around effect estimates of interest
+
+
+```{r}
+summary(m7)
+```
+### Evaluation
+
+\begin{enumerate}
+  \item The estimated standard error $\sigma = 0.8931$ describes the within-state or remaining unexplained variation.
+  \item The estimated $\tau = 0.1187$ describes the across-state variation attributed to the random intercept.
+ \item We can see that the variation between state is small compared to the variation within state.
+$$\tau^2 = 0.01408, \sigma^2 = 0.79763$$
+So, $ICC = \frac{\tau^2}{\sigma^2+\tau^2} = \frac{0.01408}{0.79763+0.01408} = 0.017$
+The ICC is 0.017 so that we almost have no correlation between ppm in the same state. 
+
+\end{enumerate}
+
+
+### Confidence Interval
+
+```{r}
+# Get confidence intervals for fixed effects (including intercept, numbeds, control)
+fixed_effects_ci <- confint(m7, parm = "beta_")
+# Display confidence intervals
+colnames(fixed_effects_ci) = c( "lower bound", "upper bound")
+kable(fixed_effects_ci)
+
+```
+The confidence interval for  fixed effect is listed above
+
+
+

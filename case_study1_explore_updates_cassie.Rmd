@@ -598,5 +598,17 @@ kable(fixed_effects_ci)
 ```
 The confidence interval for  fixed effect is listed above
 
+### Future Improvment
+```{r}
+#spline regressor for mgstr?
+df <- df %>%
+  mutate( mgstr_sq=mgstr^2)
+m11 <- lmer(formula = log_ppm ~ year + quarter_factor  +  mgstr+  mgstr_sq + bulk_purchase + source + (1 | state), data=df %>% filter(year>2009 & state!="Unknown"))
+anova(m2,m11)
+```
+
+So add the square term could futhur improve the model.
+
+
 
 
